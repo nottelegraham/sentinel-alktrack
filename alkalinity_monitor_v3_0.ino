@@ -70,6 +70,7 @@
 
 #if defined(__clang__) || defined(__GNUC__)
 #include <string>
+#include <mutex>
 #endif
 
 // ============================================================
@@ -285,18 +286,20 @@ void loop() {
     Serial.print("  Temp tank: "); Serial.println(tank.tempC, 2);
     updateTrendOutput(result_dKH);
 #if defined(WEB_ENABLED)
-    g_webState.lastResult_dKH = result_dKH;
-    g_webState.lastRefPH      = ref.pH;
-    g_webState.lastTankPH     = tank.pH;
-    g_webState.lastRefSD      = ref.pHStdDev;
-    g_webState.lastTankSD     = tank.pHStdDev;
-    g_webState.lastTemp       = ref.tempC;
-    g_webState.anchor_dKH     = cal.referenceAlk_dKH;
-    if (g_webState.historyCount < 24) {
-      g_webState.history[g_webState.historyCount++] = result_dKH;
-    } else {
-      for (int i = 0; i < 23; i++) g_webState.history[i] = g_webState.history[i+1];
-      g_webState.history[23] = result_dKH;
+    { std::lock_guard<std::mutex> _lk(g_webMutex);
+      g_webState.lastResult_dKH = result_dKH;
+      g_webState.lastRefPH      = ref.pH;
+      g_webState.lastTankPH     = tank.pH;
+      g_webState.lastRefSD      = ref.pHStdDev;
+      g_webState.lastTankSD     = tank.pHStdDev;
+      g_webState.lastTemp       = ref.tempC;
+      g_webState.anchor_dKH     = cal.referenceAlk_dKH;
+      if (g_webState.historyCount < 24) {
+        g_webState.history[g_webState.historyCount++] = result_dKH;
+      } else {
+        for (int i = 0; i < 23; i++) g_webState.history[i] = g_webState.history[i+1];
+        g_webState.history[23] = result_dKH;
+      }
     }
 #endif
 
@@ -518,13 +521,15 @@ float runTitrationCycle() {
   Serial.print("Acid normality: ");    Serial.println(cal.acidNormality, 4);
   Serial.println("----------------------------------------");
 #if defined(WEB_ENABLED)
-  g_webState.lastResult_dKH = ta_dKH;
-  g_webState.lastTemp       = 25.0f; // updated from last readAveragedSample call
-  if (g_webState.historyCount < 24) {
-    g_webState.history[g_webState.historyCount++] = ta_dKH;
-  } else {
-    for (int i = 0; i < 23; i++) g_webState.history[i] = g_webState.history[i+1];
-    g_webState.history[23] = ta_dKH;
+  { std::lock_guard<std::mutex> _lk(g_webMutex);
+    g_webState.lastResult_dKH = ta_dKH;
+    g_webState.lastTemp       = 25.0f;
+    if (g_webState.historyCount < 24) {
+      g_webState.history[g_webState.historyCount++] = ta_dKH;
+    } else {
+      for (int i = 0; i < 23; i++) g_webState.history[i] = g_webState.history[i+1];
+      g_webState.history[23] = ta_dKH;
+    }
   }
 #endif
 

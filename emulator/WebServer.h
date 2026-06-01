@@ -4,6 +4,9 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <mutex>
+#include <thread>
+#include <atomic>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -37,8 +40,10 @@ struct WebState {
   int   calStep    = 0;      // 0=idle,1=buf7,2=buf4,3=buf10,4=done
 };
 
-static WebState g_webState;
-static int g_listenFd = -1;
+static WebState  g_webState;
+static std::mutex g_webMutex;   // guards g_webState reads/writes across threads
+static int       g_listenFd  = -1;
+static std::atomic<bool> g_webRunning{false};
 
 static void webServer_sendResponse(int fd, const char* status, const char* contentType, const char* body, size_t bodyLen) {
   char header[256];
@@ -62,6 +67,7 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
   else if (strncmp(req, "GET /api/status", 15) == 0) {
     char json[2048];
     char histArr[512] = "[";
+    std::lock_guard<std::mutex> lock(g_webMutex);
     int count = g_webState.historyCount < 24 ? g_webState.historyCount : 24;
     for (int i = 0; i < count; i++) {
       char num[16];
@@ -70,7 +76,6 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
       strcat(histArr, num);
     }
     strcat(histArr, "]");
-
     int len = snprintf(json, sizeof(json),
       "{\"anchor\":%.2f,\"lastResult\":%.2f,\"refPH\":%.4f,\"tankPH\":%.4f,"
       "\"refSD\":%.5f,\"tankSD\":%.5f,\"temp\":%.2f,\"phase\":\"%s\","
@@ -94,12 +99,9 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
       std::string cmd(body, reqLen - (body - req));
       while (!cmd.empty() && (cmd.back() == '\n' || cmd.back() == '\r' || cmd.back() == ' '))
         cmd.pop_back();
-
       for (auto& c : cmd) c = toupper((unsigned char)c);
-
       extern void handleWebCommand(const char* cmd);
       handleWebCommand(cmd.c_str());
-
       const char* ok = "{\"ok\":true}";
       webServer_sendResponse(fd, "200 OK", "application/json", ok, strlen(ok));
     } else {
@@ -114,64 +116,67 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
   }
 }
 
+// Runs on a background thread — always ready to accept connections.
+static void webServer_threadFunc() {
+  while (g_webRunning.load()) {
+    struct sockaddr_in6 clientAddr;
+    socklen_t clientLen = sizeof(clientAddr);
+    int clientFd = accept(g_listenFd, (struct sockaddr*)&clientAddr, &clientLen);
+    if (clientFd < 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+
+    // Give Safari up to 500ms to finish sending headers before reading.
+    struct timeval tv = {0, 500000};
+    setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[8192] = {};
+    ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
+    if (n > 0) webServer_handleRequest(clientFd, buf, (size_t)n);
+    close(clientFd);
+  }
+}
+
 static void webServer_begin() {
-  // Use IPv6 dual-stack socket so both ::1 and 127.0.0.1 are accepted.
-  // Safari tries IPv6 first; an IPv4-only socket causes an immediate
-  // "connection refused" on ::1 before Safari can fall back.
+  // IPv6 dual-stack: accepts both ::1 and 127.0.0.1 on the same socket.
+  // Safari tries IPv6 first; AF_INET-only causes instant connection refused.
   g_listenFd = socket(AF_INET6, SOCK_STREAM, 0);
   if (g_listenFd < 0) {
-    // Fall back to IPv4 if IPv6 unavailable
     g_listenFd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_listenFd < 0) { perror("socket"); return; }
     int opt = 1;
     setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
+    addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(WEB_PORT);
+    addr.sin_port        = htons(WEB_PORT);
     if (bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
       perror("bind"); close(g_listenFd); g_listenFd = -1; return;
     }
   } else {
     int opt = 1;
     setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    // IPV6_V6ONLY=0 enables dual-stack (accepts both IPv4 and IPv6)
     int v6only = 0;
     setsockopt(g_listenFd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
     struct sockaddr_in6 addr = {};
     addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_any;
-    addr.sin6_port = htons(WEB_PORT);
+    addr.sin6_addr   = in6addr_any;
+    addr.sin6_port   = htons(WEB_PORT);
     if (bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
       perror("bind"); close(g_listenFd); g_listenFd = -1; return;
     }
   }
 
-  listen(g_listenFd, 16);
-  fcntl(g_listenFd, F_SETFL, O_NONBLOCK);
+  listen(g_listenFd, 32);
+  // Blocking accept in thread — do NOT set O_NONBLOCK on the listen socket.
+
+  g_webRunning.store(true);
+  std::thread(webServer_threadFunc).detach();
+
   printf("Web server on http://localhost:%d\n", WEB_PORT);
   fflush(stdout);
 }
 
-static void webServer_poll() {
-  if (g_listenFd < 0) return;
-
-  // Drain all pending connections so browsers that pipeline requests don't stall.
-  for (int i = 0; i < 8; i++) {
-    struct sockaddr_in clientAddr;
-    socklen_t clientLen = sizeof(clientAddr);
-    int clientFd = accept(g_listenFd, (struct sockaddr*)&clientAddr, &clientLen);
-    if (clientFd < 0) return;
-
-    char buf[4096] = {};
-    struct timeval tv = {0, 100000};
-    setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
-
-    if (n > 0) {
-      webServer_handleRequest(clientFd, buf, n);
-    }
-
-    close(clientFd);
-  }
-}
+// No-op: the background thread handles connections independently.
+static void webServer_poll() {}
