@@ -7,7 +7,7 @@ SRC      := main.cpp
 
 all: $(TARGET)
 
-$(TARGET): $(SRC) Arduino.h EEPROM.h ../alkalinity_monitor_v2_1.ino
+$(TARGET): $(SRC) Arduino.h EEPROM.h ../alkalinity_monitor_v3_0.ino
 	$(CXX) $(CXXFLAGS) -o $@ $(SRC)
 
 run: $(TARGET)

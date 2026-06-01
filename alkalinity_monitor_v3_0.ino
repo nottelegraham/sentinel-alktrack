@@ -68,6 +68,10 @@
 // TelegrahamTested, 2025.
 // https://creativecommons.org/licenses/by-nc-sa/4.0/
 
+#if defined(__clang__) || defined(__GNUC__)
+#include <string>
+#endif
+
 // ============================================================
 //  DIY Ratiometric Alkalinity Trend Monitor  —  v3.0
 //  TelegrahamTested
@@ -205,6 +209,7 @@ bool          calibrationIsValid();
 void          initDefaultCalibration();
 void          saveCalibration();
 void          handleSerialCommands();
+void          handleSerialCommands_str(const std::string& line);
 void          ezo_setTempComp(float tempC);
 float         read_pH_Probe();
 float         read_Temp_C();
@@ -740,12 +745,37 @@ void saveCalibration() {
 // ============================================================
 
 void handleSerialCommands() {
+#if defined(WEB_ENABLED)
+  webServer_poll();
+#endif
   if (!Serial.available()) return;
   String line = Serial.readStringUntil('\n');
   line.trim(); line.toUpperCase();
 
+  // ── pH probe calibration (EZO-pH 3-point) ───────────────
+  if (line == "CAL PH MID") {
+    Serial.println("EZO: Cal,mid,7.00");
+#if !SIMULATION_MODE
+    EZO_SERIAL.print("Cal,mid,7.00\r"); delay(600);
+    while (EZO_SERIAL.available()) EZO_SERIAL.read();
+#endif
+  }
+  else if (line == "CAL PH LOW") {
+    Serial.println("EZO: Cal,low,4.01");
+#if !SIMULATION_MODE
+    EZO_SERIAL.print("Cal,low,4.01\r"); delay(600);
+    while (EZO_SERIAL.available()) EZO_SERIAL.read();
+#endif
+  }
+  else if (line == "CAL PH HIGH") {
+    Serial.println("EZO: Cal,high,10.01");
+#if !SIMULATION_MODE
+    EZO_SERIAL.print("Cal,high,10.01\r"); delay(600);
+    while (EZO_SERIAL.available()) EZO_SERIAL.read();
+#endif
+  }
   // ── pH differential anchor ───────────────────────────────
-  if (line.startsWith("CAL ") &&
+  else if (line.startsWith("CAL ") &&
       !line.startsWith("CAL A") && !line.startsWith("CAL S") && !line.startsWith("CAL D")) {
     float v = line.substring(4).toFloat();
     if (v >= MIN_VALID_DKH && v <= MAX_VALID_DKH) {
@@ -864,6 +894,64 @@ void handleSerialCommands() {
     Serial.println("PUMPS_OFF          emergency stop");
   }
 }
+
+// Allows the web command handler (emulator) to inject commands without Serial I/O.
+#if defined(__clang__) || defined(__GNUC__)
+void handleSerialCommands_str(const std::string& s) {
+  String line(s.c_str());
+  line.trim(); line.toUpperCase();
+  // Reuse the same dispatch by temporarily injecting into Serial isn't practical,
+  // so we duplicate the dispatch table minimally — only the fields the web UI touches.
+  if (line == "STATUS") {
+    Serial.print("Mode: "); Serial.println(cal.mode==MODE_PH_DIFF?"pH Differential":"Acid Titration");
+    Serial.print("Sim mode: ");         Serial.println(SIMULATION_MODE?"YES":"NO");
+    Serial.print("pH-diff anchor: ");   Serial.print(cal.referenceAlk_dKH,2); Serial.println(" dKH");
+    Serial.print("Acid normality: ");   Serial.print(cal.acidNormality,4);    Serial.println(" N");
+    Serial.print("Sample volume:  ");   Serial.print(cal.sampleML,1);         Serial.println(" mL");
+    Serial.print("Dose per step:  ");   Serial.print(cal.doseMl,4);           Serial.println(" mL");
+    Serial.print("Sample steps/mL: ");  Serial.println(cal.sampleStepsPerML,1);
+    Serial.print("Acid steps/mL:   ");  Serial.println(cal.acidStepsPerML,1);
+  } else if (line == "MODE PHDI") {
+    cal.mode = MODE_PH_DIFF; saveCalibration();
+    Serial.println("Mode: pH Differential (ratiometric)");
+  } else if (line == "MODE TITR") {
+    cal.mode = MODE_TITRATION; saveCalibration();
+    Serial.println("Mode: Acid Titration");
+  } else if (line == "CAL PH MID" || line == "CAL PH LOW" || line == "CAL PH HIGH") {
+    // In simulation mode these are acknowledged only; on hardware they go over EZO UART.
+    if (line == "CAL PH MID")  Serial.println("EZO: Cal,mid,7.00 (sim)");
+    if (line == "CAL PH LOW")  Serial.println("EZO: Cal,low,4.01 (sim)");
+    if (line == "CAL PH HIGH") Serial.println("EZO: Cal,high,10.01 (sim)");
+  } else if (line.startsWith("CAL ACID ")) {
+    float v = line.substring(9).toFloat();
+    if (v > 0 && v < 2.0f) { cal.acidNormality = v; saveCalibration(); }
+  } else if (line.startsWith("CAL ACIDSPM ")) {
+    float v = line.substring(12).toFloat();
+    if (v > 0) { cal.acidStepsPerML = v; saveCalibration(); }
+  } else if (line.startsWith("CAL SAMPLESPM ")) {
+    float v = line.substring(14).toFloat();
+    if (v > 0) { cal.sampleStepsPerML = v; saveCalibration(); }
+  } else if (line.startsWith("CAL SAMPLEML ")) {
+    float v = line.substring(13).toFloat();
+    if (v > 5 && v < 200) { cal.sampleML = v; saveCalibration(); }
+  } else if (line.startsWith("CAL DOSE ")) {
+    float v = line.substring(9).toFloat();
+    if (v > 0.001f && v < 0.5f) { cal.doseMl = v; saveCalibration(); }
+  } else if (line.startsWith("CAL ") &&
+             !line.startsWith("CAL A") && !line.startsWith("CAL S") && !line.startsWith("CAL D")) {
+    float v = line.substring(4).toFloat();
+    if (v >= MIN_VALID_DKH && v <= MAX_VALID_DKH) { cal.referenceAlk_dKH = v; saveCalibration(); }
+  } else if (line == "PRIME") {
+    Serial.println("PRIME: (simulated in emulator)");
+  } else if (line == "PUMPS_OFF") {
+    ensurePumpsOff();
+    Serial.println("EMERGENCY STOP — steppers halted, air pump off.");
+  } else if (line == "RUN") {
+    g_forceRun = true;
+    Serial.println("RUN queued.");
+  }
+}
+#endif
 
 // ============================================================
 //  SENSOR IMPLEMENTATIONS

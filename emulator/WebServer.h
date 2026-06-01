@@ -25,7 +25,16 @@ struct WebState {
   const char* cyclePhase = "startup";
   float history[24] = {};
   int historyCount = 0;
+  // calibration / mode (kept in sync after every command)
   float anchor_dKH = 0.0f;
+  int   mode       = 0;      // 0 = PHDI, 1 = TITR
+  float acidNorm   = 0.1f;
+  float sampleML   = 25.0f;
+  float doseMl     = 0.02f;
+  float sampleSPM  = 3200.0f;
+  float acidSPM    = 6400.0f;
+  // pH calibration wizard state
+  int   calStep    = 0;      // 0=idle,1=buf7,2=buf4,3=buf10,4=done
 };
 
 static WebState g_webState;
@@ -51,7 +60,7 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
     webServer_sendResponse(fd, "200 OK", "text/html", WEB_HTML, strlen(WEB_HTML));
   }
   else if (strncmp(req, "GET /api/status", 15) == 0) {
-    char json[1024];
+    char json[2048];
     char histArr[512] = "[";
     int count = g_webState.historyCount < 24 ? g_webState.historyCount : 24;
     for (int i = 0; i < count; i++) {
@@ -65,12 +74,17 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
     int len = snprintf(json, sizeof(json),
       "{\"anchor\":%.2f,\"lastResult\":%.2f,\"refPH\":%.4f,\"tankPH\":%.4f,"
       "\"refSD\":%.5f,\"tankSD\":%.5f,\"temp\":%.2f,\"phase\":\"%s\","
-      "\"history\":%s,\"historyCount\":%d}",
+      "\"history\":%s,\"historyCount\":%d,"
+      "\"mode\":%d,\"acidNorm\":%.4f,\"sampleML\":%.1f,\"doseMl\":%.4f,"
+      "\"sampleSPM\":%.0f,\"acidSPM\":%.0f,\"calStep\":%d}",
       g_webState.anchor_dKH, g_webState.lastResult_dKH,
       g_webState.lastRefPH, g_webState.lastTankPH,
       g_webState.lastRefSD, g_webState.lastTankSD,
       g_webState.lastTemp, g_webState.cyclePhase,
-      histArr, g_webState.historyCount);
+      histArr, g_webState.historyCount,
+      g_webState.mode, g_webState.acidNorm, g_webState.sampleML,
+      g_webState.doseMl, g_webState.sampleSPM, g_webState.acidSPM,
+      g_webState.calStep);
     webServer_sendResponse(fd, "200 OK", "application/json", json, len);
   }
   else if (strncmp(req, "POST /api/command", 17) == 0) {

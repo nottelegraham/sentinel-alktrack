@@ -13,34 +13,28 @@
 void handleWebCommand(const char* cmd);
 
 // Include the firmware directly
-#include "../alkalinity_monitor_v2_1.ino"
+#include "../alkalinity_monitor_v3_0.ino"
+
+static void syncWebState() {
+  g_webState.anchor_dKH = cal.referenceAlk_dKH;
+  g_webState.mode       = (int)cal.mode;
+  g_webState.acidNorm   = cal.acidNormality;
+  g_webState.sampleML   = cal.sampleML;
+  g_webState.doseMl     = cal.doseMl;
+  g_webState.sampleSPM  = cal.sampleStepsPerML;
+  g_webState.acidSPM    = cal.acidStepsPerML;
+}
 
 void handleWebCommand(const char* cmd) {
   std::string line(cmd);
-  // Process same as serial input
-  if (line.rfind("CAL ", 0) == 0) {
-    float v = std::strtof(line.c_str() + 4, nullptr);
-    if (v >= MIN_VALID_DKH && v <= MAX_VALID_DKH) saveCalibration(v);
-  }
-  else if (line == "STATUS") {
-    Serial.print("Anchor: "); Serial.print(cal.referenceAlk_dKH, 2); Serial.println(" dKH");
-    Serial.print("Sim mode: "); Serial.println(SIMULATION_MODE ? "YES" : "NO");
-  }
-  else if (line == "PUMPS_OFF") {
-    ensurePumpsOff();
-    g_abortCycle = true;
-    Serial.println("EMERGENCY STOP — all pumps off.");
-  }
-  else if (line == "RUN") {
-    g_forceRun = true;
-    Serial.println("RUN queued.");
-  }
+  handleSerialCommands_str(line);
+  syncWebState();
 }
 
 int main() {
   webServer_begin();
   setup();
-  g_webState.anchor_dKH = cal.referenceAlk_dKH;
+  syncWebState();
   while (true) {
     loop();
   }
