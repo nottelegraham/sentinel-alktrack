@@ -284,6 +284,21 @@ void loop() {
     Serial.print("Temp ref: "); Serial.print(ref.tempC, 2);
     Serial.print("  Temp tank: "); Serial.println(tank.tempC, 2);
     updateTrendOutput(result_dKH);
+#if defined(WEB_ENABLED)
+    g_webState.lastResult_dKH = result_dKH;
+    g_webState.lastRefPH      = ref.pH;
+    g_webState.lastTankPH     = tank.pH;
+    g_webState.lastRefSD      = ref.pHStdDev;
+    g_webState.lastTankSD     = tank.pHStdDev;
+    g_webState.lastTemp       = ref.tempC;
+    g_webState.anchor_dKH     = cal.referenceAlk_dKH;
+    if (g_webState.historyCount < 24) {
+      g_webState.history[g_webState.historyCount++] = result_dKH;
+    } else {
+      for (int i = 0; i < 23; i++) g_webState.history[i] = g_webState.history[i+1];
+      g_webState.history[23] = result_dKH;
+    }
+#endif
 
   } else {
 
@@ -337,6 +352,9 @@ void stepML(int stepPin, int dirPin, float mL, bool forward, float stepsPerML, f
 
 SampleReading runReferenceCycle() {
   Serial.println("[REF] Filling from reservoir...");
+#if defined(WEB_ENABLED)
+  g_webState.cyclePhase = "ref_aerate";
+#endif
   stepML(PUMP_A_STEP, PUMP_A_DIR, cal.sampleML, true, cal.sampleStepsPerML);
   runAeration(AERATE_TIME_MS);
   if (g_abortCycle) {
@@ -367,6 +385,9 @@ void runFlushCycle(bool doubleRinse) {
 
 SampleReading runTankCycle() {
   Serial.println("[TANK] Filling from sump...");
+#if defined(WEB_ENABLED)
+  g_webState.cyclePhase = "tank_aerate";
+#endif
   stepML(PUMP_B_STEP, PUMP_B_DIR, cal.sampleML, true, cal.sampleStepsPerML);
   runAeration(AERATE_TIME_MS);
   if (g_abortCycle) {
@@ -496,6 +517,16 @@ float runTitrationCycle() {
   Serial.print("Sample volume:  ");    Serial.print(cal.sampleML, 1);    Serial.println(" mL");
   Serial.print("Acid normality: ");    Serial.println(cal.acidNormality, 4);
   Serial.println("----------------------------------------");
+#if defined(WEB_ENABLED)
+  g_webState.lastResult_dKH = ta_dKH;
+  g_webState.lastTemp       = 25.0f; // updated from last readAveragedSample call
+  if (g_webState.historyCount < 24) {
+    g_webState.history[g_webState.historyCount++] = ta_dKH;
+  } else {
+    for (int i = 0; i < 23; i++) g_webState.history[i] = g_webState.history[i+1];
+    g_webState.history[23] = ta_dKH;
+  }
+#endif
 
   // 8. Drain acidic waste
   drainWaste();
@@ -586,6 +617,9 @@ void sleepUntilNextCycle() {
   Serial.print("Next cycle in "); Serial.print(TEST_INTERVAL_MS / 3600000.0f, 1);
   Serial.println(" h.");
   Serial.println("Commands: STATUS  MODE PHDI  MODE TITR  CAL  PRIME  RUN  PUMPS_OFF");
+#if defined(WEB_ENABLED)
+  g_webState.cyclePhase = "sleeping";
+#endif
   unsigned long t0 = millis();
   while (millis() - t0 < TEST_INTERVAL_MS) {
     handleSerialCommands();
