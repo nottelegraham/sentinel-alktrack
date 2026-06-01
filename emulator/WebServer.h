@@ -115,25 +115,39 @@ static void webServer_handleRequest(int fd, const char* req, size_t reqLen) {
 }
 
 static void webServer_begin() {
-  g_listenFd = socket(AF_INET, SOCK_STREAM, 0);
-  if (g_listenFd < 0) { perror("socket"); return; }
-
-  int opt = 1;
-  setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-  struct sockaddr_in addr = {};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = INADDR_ANY;
-  addr.sin_port = htons(WEB_PORT);
-
-  if (bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-    perror("bind");
-    close(g_listenFd);
-    g_listenFd = -1;
-    return;
+  // Use IPv6 dual-stack socket so both ::1 and 127.0.0.1 are accepted.
+  // Safari tries IPv6 first; an IPv4-only socket causes an immediate
+  // "connection refused" on ::1 before Safari can fall back.
+  g_listenFd = socket(AF_INET6, SOCK_STREAM, 0);
+  if (g_listenFd < 0) {
+    // Fall back to IPv4 if IPv6 unavailable
+    g_listenFd = socket(AF_INET, SOCK_STREAM, 0);
+    if (g_listenFd < 0) { perror("socket"); return; }
+    int opt = 1;
+    setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(WEB_PORT);
+    if (bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      perror("bind"); close(g_listenFd); g_listenFd = -1; return;
+    }
+  } else {
+    int opt = 1;
+    setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // IPV6_V6ONLY=0 enables dual-stack (accepts both IPv4 and IPv6)
+    int v6only = 0;
+    setsockopt(g_listenFd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+    struct sockaddr_in6 addr = {};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    addr.sin6_port = htons(WEB_PORT);
+    if (bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      perror("bind"); close(g_listenFd); g_listenFd = -1; return;
+    }
   }
 
-  listen(g_listenFd, 8);
+  listen(g_listenFd, 16);
   fcntl(g_listenFd, F_SETFL, O_NONBLOCK);
   printf("Web server on http://localhost:%d\n", WEB_PORT);
   fflush(stdout);
@@ -142,19 +156,22 @@ static void webServer_begin() {
 static void webServer_poll() {
   if (g_listenFd < 0) return;
 
-  struct sockaddr_in clientAddr;
-  socklen_t clientLen = sizeof(clientAddr);
-  int clientFd = accept(g_listenFd, (struct sockaddr*)&clientAddr, &clientLen);
-  if (clientFd < 0) return;
+  // Drain all pending connections so browsers that pipeline requests don't stall.
+  for (int i = 0; i < 8; i++) {
+    struct sockaddr_in clientAddr;
+    socklen_t clientLen = sizeof(clientAddr);
+    int clientFd = accept(g_listenFd, (struct sockaddr*)&clientAddr, &clientLen);
+    if (clientFd < 0) return;
 
-  char buf[4096] = {};
-  struct timeval tv = {0, 100000};
-  setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
+    char buf[4096] = {};
+    struct timeval tv = {0, 100000};
+    setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ssize_t n = read(clientFd, buf, sizeof(buf) - 1);
 
-  if (n > 0) {
-    webServer_handleRequest(clientFd, buf, n);
+    if (n > 0) {
+      webServer_handleRequest(clientFd, buf, n);
+    }
+
+    close(clientFd);
   }
-
-  close(clientFd);
 }
