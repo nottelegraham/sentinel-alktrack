@@ -72,6 +72,4 @@ Equilibrium constants: K1 and K2 from Lueker et al. (2000), KB from Dickson (199
 
 ## License
 
-**CC BY-NC-SA 4.0**  
-Firmware, documentation, schematics, and all associated files are dedicated to the public domain. Copy, modify, sell, redistribute — no permission, attribution, or conditions required.  
-See [LICENSE](LICENSE) or [creativecommons.org/licenses/by-nc-sa/4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+Free for personal, hobby and other noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). Selling this software, devices built with it, or any part of it requires written permission from TelegrahamTested.

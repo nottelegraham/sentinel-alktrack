@@ -163,12 +163,9 @@ Where `N_acid` is acid normality, `V_acid_mL` is the endpoint acid volume, and `
 
 ## License
 
-This project is released under the **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0)**.
+Free for personal, hobby and other noncommercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). Selling this software, devices built with it, or any part of it requires written permission from TelegrahamTested.
 
-You may fork it, modify it, improve it, share it, and build on it for personal, educational, or hobby use. You may not sell the project files, kits, assembled devices, or commercial products based on this design. Modified versions must be shared under the same license.
-
-Full license:
-https://creativecommons.org/licenses/by-nc-sa/4.0/
+You may fork, modify and share it for personal, educational or hobby use. You may not sell the project files, kits, assembled devices or commercial products based on this design without written permission.
 
 ---
 
