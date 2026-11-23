@@ -2,7 +2,7 @@
 
 ![Sentinel AlkTrack](thumbnail.png)
 
-**TelegrahamTested** — Firmware v3.0
+**TelegrahamTested** — Firmware v3.1
 
 Sentinel AlkTrack is an open, non-commercial DIY alkalinity monitor for reef aquariums. Version 3.0 supports two user-selectable operating modes:
 
@@ -10,6 +10,39 @@ Sentinel AlkTrack is an open, non-commercial DIY alkalinity monitor for reef aqu
 2. **Acid titration mode** — true acid-demand alkalinity testing using a fixed tank-water sample volume and a known-strength acid reagent.
 
 This project is intended for education, experimentation, and hobby use. It is not a commercial product, a laboratory instrument, or a replacement for independent judgment.
+
+---
+
+## What changed in v3.1
+
+v3.1 is a safety and accuracy release. Upgrade from v3.0 is strongly recommended.
+
+Safety:
+
+- v3.0 did not compile (missing `#include` lines). Fixed.
+- v3.0 left acidic sample in the chamber after any failed titration, and the next cycle filled on top of it. Cleanup now always runs, and every cycle starts by draining the chamber to waste.
+- New chamber high-level switch (normally closed, fail-safe). Every fill stops the moment it trips.
+- Software volume ledger refuses any fill that would exceed the chamber volume, set with `CAL CHAMBER`.
+- Stepper drivers are disabled between moves (shared ENABLE pin).
+- `PUMPS_OFF` is now a latched emergency stop. `RESUME` clears it. Settings cannot be changed while a cycle runs.
+
+Titration accuracy:
+
+- Tank-water rinse before every sample, so leftover endpoint water no longer dilutes the next test.
+- Separate steps/mL calibration for every pump, with a guided `CALPUMP` routine.
+- Titration continues to pH 3.0 and uses a true Gran fit on the post-equivalence region. The Gran result does not depend on a pH offset error. In v3.0 the Gran fit used the wrong pH region and never ran.
+- The pH 4.5 endpoint is interpolated and reported as a cross-check. v3.0 always overshot by up to one dose (about +0.2 dKH at default settings).
+- Titration is blocked until the pH probe has a 2- or 3-point calibration. New `PHCAL`, `PHCHECK` and `PHSLOPE` commands.
+
+pH differential accuracy:
+
+- Bracketed reference (REF, TANK, REF). If room CO2 or the probe moves during the cycle, the two references disagree and the result is rejected instead of reported.
+- Temperature-dependent constants (K0, K1, K2, KB) at each sample's measured temperature.
+- The reference reservoir is no longer contaminated with tank water.
+- Equilibrium is checked by pH drift, and aeration is extended if needed.
+- Will not run without a reference anchor.
+
+v3.0 EEPROM settings are migrated automatically. Pumps A and C start with Pump B's calibration; run `CALPUMP A` and `CALPUMP C`.
 
 ---
 
@@ -41,11 +74,13 @@ dKH = (acid_normality × acid_mL / sample_mL) × 2800
 
 Draws a known reference sample into a shared reaction chamber, aerates it, records pH and temperature, then removes it. A tank sample is then drawn into the same chamber, aerated under the same general conditions, and measured with the same pH and temperature probes.
 
+The reference is measured twice, before and after the tank sample. Room CO2 only cancels when both samples see the same CO2 level, so if the two reference readings disagree by more than 0.015 pH, the result is rejected.
+
 The result is a **reference-anchored alkalinity trend estimate**. This mode is reagent-free and best used to watch whether alkalinity is rising, falling, or stable.
 
 ### Acid titration mode
 
-Draws a fixed volume of tank water into the reaction chamber, adds known-strength acid in measured increments using a stepper-driven dosing pump, monitors pH, detects an endpoint near the total alkalinity region, and calculates alkalinity from the acid volume consumed.
+Rinses the chamber with tank water, draws a fixed volume of tank water, then adds known-strength acid in measured increments using a stepper-driven dosing pump. Dosing continues past the endpoint to pH 3.0. The equivalence volume comes from a Gran fit on the pH 3.0–3.8 region, with the interpolated pH 4.5 endpoint reported as a cross-check. Alkalinity is calculated from the acid volume consumed.
 
 This mode is a traditional chemical titration. It consumes reagent and produces acidic waste.
 
@@ -68,10 +103,12 @@ Minimum v3.0 hardware:
 - Micro air pump and ceramic fine-bubble airstone
 - Reference reservoir
 - Acid reagent reservoir for titration mode
-- Waste collection container for titration mode
+- Waste collection container (every cycle starts by draining the chamber to waste)
+- Chamber high-level float switch, normally closed (GPIO 32 to GND)
+- Stepper driver ENABLE pins tied together to GPIO 13, with a 10k pull-up to 3.3V
 - 12V supply rated at 5A minimum
 - 5V/USB supply for ESP32
-- Optional isolated DAC/BNC output for controller-readable trend logging
+- Optional trend output on GPIO 25: about 1.0 V (6 dKH) to 2.6 V (12 dKH). This is not a pH-electrode-level signal; feeding a controller pH input needs an isolated scaling stage
 
 ---
 
@@ -80,7 +117,7 @@ Minimum v3.0 hardware:
 Open:
 
 ```text
-alkalinity_monitor_v3_0/alkalinity_monitor_v3_0.ino
+alkalinity_monitor_v3_1/alkalinity_monitor_v3_1.ino
 ```
 
 Libraries required when `SIMULATION_MODE false`:
@@ -91,15 +128,18 @@ Libraries required when `SIMULATION_MODE false`:
 First run:
 
 1. Upload firmware with `SIMULATION_MODE true` for bench testing.
-2. Open Serial Monitor at 115200 baud.
-3. Confirm commands respond with `STATUS`.
-4. Set mode:
-   - `MODE PHDI` for pH differential mode.
-   - `MODE TITR` for acid titration mode.
-5. For pH differential mode, enter the reference alkalinity anchor, for example: `CAL 8.50`.
-6. For titration mode, set acid normality, sample volume, and pump calibration values.
+2. Open Serial Monitor at 115200 baud (line ending: Newline).
+3. Confirm the firmware responds to `STATUS`.
+4. Set `SIMULATION_MODE false`, re-upload.
+5. Check `STATUS` shows `Level switch: OK`. Lift the float: it must show `HIGH/OPEN (fault)`.
+6. Fill the chamber to the level switch with a syringe and enter that volume with `CAL CHAMBER <mL>` (default 40).
 7. Prime tubing with `PRIME`.
-8. Set `SIMULATION_MODE false`, re-upload, and run `RUN`.
+8. Calibrate each pump: move its outlet into a graduated cylinder, send `CALPUMP B`, measure, then send `CALPUMP B <measured mL>`. Repeat for A, C and D.
+9. Calibrate the pH probe: `PHCAL MID 7.00`, then `PHCAL LOW 4.00` (and optionally `PHCAL HIGH 10.00`). Verify with `PHCHECK 4.00`.
+10. Set mode:
+   - `MODE PHDI`, then the reference anchor, for example `CAL 8.50`.
+   - `MODE TITR`, then `CAL ACID <N>` for your acid.
+11. Send `RUN`.
 
 ---
 
@@ -107,18 +147,26 @@ First run:
 
 | Command | What it does |
 |---|---|
-| `STATUS` | Show current mode, calibration values, and last result |
-| `RUN` | Trigger immediate measurement cycle |
-| `MODE PHDI` | Switch to pH differential/ratiometric mode |
-| `MODE TITR` | Switch to acid titration mode |
-| `CAL 8.50` | Set pH differential reference anchor in dKH |
-| `CAL ACID 0.1000` | Set acid reagent normality for titration mode |
-| `CAL SAMPLEML 25.0` | Set titration sample volume in mL |
-| `CAL DOSE 0.020` | Set acid dose increment in mL |
-| `CAL SAMPLESPM 3200` | Set sample pump calibration in steps/mL |
-| `CAL ACIDSPM 6400` | Set acid pump calibration in steps/mL |
-| `PRIME` | Prime fluid lines |
-| `PUMPS_OFF` | Emergency stop and cycle abort |
+| `STATUS` | Mode, state, last fault, level switch, all calibration values |
+| `RUN` | Start a cycle now |
+| `ABORT` | Stop the cycle; the chamber is still emptied |
+| `PUMPS_OFF` | Emergency stop, latched |
+| `RESUME` | Clear the emergency stop |
+| `PRIME` | Prime all lines (pre-drains first) |
+| `MODE PHDI` / `MODE TITR` | Select operating mode |
+| `CAL 8.50` | pH differential reference anchor in dKH |
+| `CAL ACID 0.1000` | Acid normality |
+| `CAL SAMPLEML 25.0` | Sample volume in mL (limit depends on chamber volume) |
+| `CAL DOSE 0.020` | Fine acid dose in mL |
+| `CAL SAL 35.0` | Salinity in PSU (pH differential constants) |
+| `CAL CHAMBER 40` | Chamber volume up to the level switch, in mL |
+| `CALPUMP B` | Run a calibration volume on pump A, B, C or D |
+| `CALPUMP B 9.85` | Enter the measured volume; updates steps/mL |
+| `PHCAL MID 7.00` | EZO-pH calibration point (`MID` first, then `LOW`, `HIGH`; `PHCAL CLEAR`) |
+| `PHCHECK 4.00` | Verify the probe in a buffer; reports pass/fail (±0.05) |
+| `PHSLOPE` | Probe slope health (95–105% is good) |
+
+Settings commands are refused while a cycle is running.
 
 ---
 
@@ -144,6 +192,8 @@ All internal alkalinity math must use compatible units. Inputs and outputs are s
 
 ### Acid titration mode
 
+The equivalence volume `Ve` comes from a Gran fit after the endpoint, where `F = (V_sample + V_acid) × 10^-pH` is a straight line that crosses zero at `Ve`.
+
 ```text
 dKH = (N_acid × V_acid_mL / V_sample_mL) × 2800
 ```
@@ -158,8 +208,8 @@ Where `N_acid` is acid normality, `V_acid_mL` is the endpoint acid volume, and `
 |---|---|
 | `DIY_Alkalinity_Monitor_Build_Guide.docx` | Hardware, wiring, assembly, and calibration guide |
 | `DIY_Alkalinity_Monitor_User_Guide.docx` | Operating instructions for both modes |
-| `DIY_Alkalinity_Monitor_Price_Sheet_v3_0.xlsx` | Updated component price sheet |
-| `DIY_Alkalinity_Monitor_Changelog.docx` | Version history through v3.0 |
+| `DIY_Alkalinity_Monitor_Price_Sheet_v3_1.xlsx` | Updated component price sheet |
+| `DIY_Alkalinity_Monitor_Changelog.docx` | Version history through v3.1 |
 
 Firmware and documents for v2.1 and v2.2 (pH differential only) are archived in [`Version 2/`](Version%202/).
 

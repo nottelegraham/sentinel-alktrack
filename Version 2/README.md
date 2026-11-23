@@ -68,7 +68,7 @@ TA_tank = (TA_ref − BA_ref) × ratio + BA_tank
 
 Where `ratio = f(K1, K2, H_tank) / f(K1, K2, H_ref)` and `f(K1, K2, H) = K1/H + 2·K1·K2/H²`
 
-Room CO₂ (pCO₂) appears in both numerator and denominator and cancels completely. Borate alkalinity (BA) is stripped from the reference and added back for the tank using BT and KB constants. All arithmetic runs internally in eq/L; input and output are in dKH.
+Room CO₂ (pCO₂) appears in both numerator and denominator and cancels completely. This only holds when both samples see the same room CO₂. v2 measures them one after the other, so a change in room CO₂ between the two readings becomes an error. v3.1 brackets the tank sample with two reference readings to catch this. Borate alkalinity (BA) is stripped from the reference and added back for the tank using BT and KB constants. All arithmetic runs internally in eq/L; input and output are in dKH.
 
 Equilibrium constants: K1 and K2 from Lueker et al. (2000), KB from Dickson (1990), fixed at 25 °C / 35 ppt for trend-only use.
 
