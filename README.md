@@ -30,17 +30,23 @@ Titration accuracy:
 
 - Tank-water rinse before every sample, so leftover endpoint water no longer dilutes the next test.
 - Separate steps/mL calibration for every pump, with a guided `CALPUMP` routine.
-- Titration continues to pH 3.0 and uses a true Gran fit on the post-equivalence region. The Gran result does not depend on a pH offset error. In v3.0 the Gran fit used the wrong pH region and never ran.
+- Titration follows the open-cell reference method (Dickson SOP 3b): past the endpoint the CO2 is stripped by aeration, dosing continues to pH 3.0, and a Gran fit is made on the pH 3.0–3.5 region. The Gran result does not depend on a pH offset error. In v3.0 the Gran fit used the wrong pH region and never ran.
 - The pH 4.5 endpoint is interpolated and reported as a cross-check. v3.0 always overshot by up to one dose (about +0.2 dKH at default settings).
 - Titration is blocked until the pH probe has a 2- or 3-point calibration. New `PHCAL`, `PHCHECK` and `PHSLOPE` commands.
 
 pH differential accuracy:
 
 - Bracketed reference (REF, TANK, REF). If room CO2 or the probe moves during the cycle, the two references disagree and the result is rejected instead of reported.
-- Temperature-dependent constants (K0, K1, K2, KB) at each sample's measured temperature.
+- Temperature-dependent constants (K0, K1, K2, KB) at each sample's measured temperature. The water-vapour content of the equilibrating air is also corrected for temperature.
 - The reference reservoir is no longer contaminated with tank water.
 - Equilibrium is checked by pH drift, and aeration is extended if needed.
 - Will not run without a reference anchor.
+
+Self-calibration and reminders:
+
+- `REFTITR` titrates the reference water with the machine's own titration mode and sets the pH differential anchor.
+- `ACIDSTD <dKH>` titrates a known standard and sets the acid strength.
+- The firmware reminds you when the reference anchor, acid check or probe check is due. See [Accuracy reminders](#accuracy-reminders).
 
 v3.0 EEPROM settings are migrated automatically. Pumps A and C start with Pump B's calibration; run `CALPUMP A` and `CALPUMP C`.
 
@@ -80,7 +86,7 @@ The result is a **reference-anchored alkalinity trend estimate**. This mode is r
 
 ### Acid titration mode
 
-Rinses the chamber with tank water, draws a fixed volume of tank water, then adds known-strength acid in measured increments using a stepper-driven dosing pump. Dosing continues past the endpoint to pH 3.0. The equivalence volume comes from a Gran fit on the pH 3.0–3.8 region, with the interpolated pH 4.5 endpoint reported as a cross-check. Alkalinity is calculated from the acid volume consumed.
+Rinses the chamber with tank water, draws a fixed volume of tank water, then adds known-strength acid in measured increments using a stepper-driven dosing pump. Once past the endpoint, the CO2 released by the acid is stripped with 3 minutes of aeration, then dosing continues to pH 3.0. The equivalence volume comes from a Gran fit on the pH 3.0–3.5 region, with the interpolated pH 4.5 endpoint reported as a cross-check. Alkalinity is calculated from the acid volume consumed.
 
 This mode is a traditional chemical titration. It consumes reagent and produces acidic waste.
 
@@ -165,8 +171,35 @@ First run:
 | `PHCAL MID 7.00` | EZO-pH calibration point (`MID` first, then `LOW`, `HIGH`; `PHCAL CLEAR`) |
 | `PHCHECK 4.00` | Verify the probe in a buffer; reports pass/fail (±0.05) |
 | `PHSLOPE` | Probe slope health (95–105% is good) |
+| `REFTITR` | Titrate the reference water and set the anchor |
+| `ACIDSTD 8.00` | Titrate a known standard on Pump B's inlet and set the acid strength |
 
 Settings commands are refused while a cycle is running.
+
+---
+
+## Accuracy reminders
+
+After each cycle, and in `STATUS`, the firmware prints a reminder with the fix when one of these is due.
+
+| Issue | Why it matters | Fix | Reminder |
+|---|---|---|---|
+| Reference water drifts | Stored tank water still holds bacteria and ammonia. Nitrification uses up alkalinity, and evaporation raises it. pH differential results cannot be more accurate than the anchor. | Fill the reservoir with tank water passed through a 0.2 µm syringe filter, or with aged fresh salt mix. Keep it dark and sealed. Run `REFTITR` monthly and after every refill. | 30 days (pH differential mode) |
+| Acid strength | Titration results scale one-for-one with the acid normality. Evaporation slowly strengthens the acid in the reservoir. | Keep the acid reservoir sealed, venting through a small tube. Run `ACIDSTD <dKH>` monthly and after every refill. Optional: make the acid up in 0.6 M NaCl (35 g/L), as the reference method does, so the ionic strength stays steady. | 30 days (titration mode) |
+| pH probe | Calibration drifts and probes age. | `PHCHECK 4.00` weekly. If it fails, recalibrate with `PHCAL`. | 7 days |
+| pH scale | The probe is calibrated in standard buffers, while the constants assume the seawater pH scale. | No action needed. It costs under 1% in the pH differential ratio and does not affect the titration's Gran result. | None |
+| Boron constant | The firmware uses Uppström (1974); Lee et al. (2010) is about 4% higher. | No action needed. The effect is about 0.01 dKH. | None |
+
+### Making a standard for `ACIDSTD`
+
+1. Dry sodium carbonate (washing soda, or baking soda that converts when baked) for 1 hour at 250 °C. Cool it in a sealed jar.
+2. Dissolve 1.514 g in RODI water and make it up to exactly 1.000 L. This stock is 80.0 dKH.
+3. Dilute 100.0 mL of stock to exactly 1.000 L. This standard is 8.00 dKH.
+4. Weigh to 0.001 g if you can (0.01 g gives about ±0.3%). Use a volumetric flask or a good graduated cylinder (about ±1%).
+
+A commercial alkalinity standard with a stated value also works.
+
+To run it: put Pump B's inlet in at least 80 mL of standard, send `ACIDSTD 8.00`, then move the inlet back to the sump. A change over 10% is not saved automatically; the firmware shows the value to enter with `CAL ACID` if you confirm it is right.
 
 ---
 

@@ -27,8 +27,9 @@
  *      leftover endpoint water dilutes the next sample.
  *    - Separate steps/mL calibration for every pump (A, B, C, D), with
  *      a guided CALPUMP routine.
- *    - Titration continues past the endpoint to pH 3.0 so a real Gran
- *      fit can be made on the post-equivalence region (pH 3.0-3.8).
+ *    - Titration follows the open-cell method (Dickson SOP 3b): past the
+ *      endpoint, CO2 is stripped by aeration, then dosing continues to
+ *      pH 3.0 and a Gran fit is made on the pH 3.0-3.5 region.
  *      The Gran result does not depend on a pH offset error.
  *    - Fixed pH 4.5 endpoint is interpolated between the two bracketing
  *      points (v3.0 always overshot by up to one dose).
@@ -38,6 +39,12 @@
  *    - Unsettled readings are counted and reported.
  *    - Titration refuses to run until the EZO-pH has a 2- or 3-point
  *      calibration.
+ *
+ *  SELF-CALIBRATION AND REMINDERS
+ *    - REFTITR titrates the reference water and sets the pH-diff anchor.
+ *    - ACIDSTD <dKH> titrates a known standard and sets the acid strength.
+ *    - Reminders when the reference anchor (30 d), acid check (30 d) or
+ *      probe check (7 d) is due, with the fix to run.
  *
  *  pH PROBE
  *    - PHCAL commands drive EZO-pH calibration (mid/low/high/clear).
@@ -142,6 +149,12 @@ const char PUMP_NAME[4]     = { 'A', 'B', 'C', 'D' };
 //                  E-stop stops it.
 enum MoveKind : uint8_t { MOVE_FILL = 0, MOVE_CLEANUP = 1 };
 
+// What a titration samples:
+//   SRC_TANK — tank water via Pump B (normal measurement)
+//   SRC_REF  — reference reservoir via Pump A (REFTITR: re-anchor)
+//   SRC_STD  — a known standard via Pump B, inlet moved to the standard (ACIDSTD)
+enum TitrSource : uint8_t { SRC_TANK = 0, SRC_REF = 1, SRC_STD = 2 };
+
 // ── Stepper speed ────────────────────────────────────────────
 const float STEP_SPEED_WATER = 800.0f;   // steps/sec — Pumps A, B, C
 const float STEP_SPEED_ACID  = 200.0f;   // steps/sec — Pump D (slow = precise)
@@ -176,7 +189,9 @@ const float TEMP_MATCH_WARN_C    = 1.5f;    // warn if ref/tank temps differ mor
 const float          ENDPOINT_PH       = 4.50f;  // interpolated fixed endpoint
 const float          COARSE_UNTIL_PH   = 5.80f;  // coarse doses above this pH
 const float          COARSE_MULTIPLIER = 5.0f;   // coarse dose = 5 x fine dose
-const float          GRAN_PH_HIGH      = 3.80f;  // Gran fit window (post-equivalence)
+const float          STRIP_BELOW_PH    = 3.90f;  // first point below this: strip CO2
+const unsigned long  STRIP_MS          = 180000UL; // CO2 strip aeration (3 min)
+const float          GRAN_PH_HIGH      = 3.50f;  // Gran fit window (post-equivalence)
 const float          GRAN_PH_LOW       = 3.00f;
 const float          GRAN_STOP_PH      = 3.00f;  // stop dosing at/below this
 const float          ABORT_PH          = 2.70f;  // hard abort below this
@@ -188,6 +203,13 @@ const unsigned long  PRE_MIX_MS        = 30000UL;// mix after fill, before first
 const unsigned long  STABILIZE_MS      = 20000UL;// max wait for pH to stabilise
 const float          PH_STABLE_DELTA   = 0.003f; // pH "stable" threshold
 const float          ACID_EXCESS_ML    = 0.60f;  // acid allowed past MAX_VALID_DKH Ve
+
+// ── Maintenance reminders (days, counted from completed cycles) ──
+const float REF_REANCHOR_DAYS  = 30.0f;  // reference anchor age
+const float ACID_RECHECK_DAYS  = 30.0f;  // acid strength check age
+const float PHCHECK_DAYS       = 7.0f;   // probe buffer check age
+const uint32_t NEVER           = 0xFFFFFFFFu;
+const float ACIDSTD_MAX_CHANGE = 0.10f;  // larger change needs manual CAL ACID
 
 // ── pH probe checks ──────────────────────────────────────────
 const float PHCHECK_TOLERANCE  = 0.05f;  // pass/fail band for buffer check
@@ -226,6 +248,9 @@ struct CalibrationData {
   float         doseMl;             // fine acid increment in mL
   float         salinity;           // PSU, used by pH-diff constants
   float         chamberMaxML;       // usable chamber volume below the level switch
+  uint32_t      cyclesSinceRef;     // since reference anchor set (NEVER = not set)
+  uint32_t      cyclesSinceAcid;    // since acid strength verified
+  uint32_t      cyclesSincePhCheck; // since PHCHECK pass or PHCAL
   OperatingMode mode;
   uint8_t       _pad[3];
 };
@@ -269,6 +294,11 @@ static char  g_lastFault[96] = "none";
   static SimContent g_simContent = SIM_EMPTY;
   static float g_simAcidML = 0.0f;
   static float g_simTankAlk_dKH = 8.20f;
+  static float g_simRefAlk_dKH  = 8.50f;
+  static float g_simStdAlk_dKH  = 8.00f;
+  static float g_simTrueAcidN   = 0.1000f;  // actual acid strength in the simulation
+  static float g_simTitrAlk_dKH = 8.20f;
+  static float g_simDicFactor = 1.0f;   // DIC left after CO2 strip
 #else
   static OneWire           g_oneWire(PIN_DS18B20);
   static DallasTemperature g_ds18b20(&g_oneWire);
@@ -286,7 +316,11 @@ bool          rinseWithReference();
 SampleReading measureReference(const char* label);
 SampleReading measureTank();
 SampleReading aerateAndRead(const char* label);
-float         runTitrationCycle();
+float         runTitration(TitrSource src, float* veOut);
+bool          rinseToWaste(PumpId p);
+void          refTitrate();
+void          acidStandardize(float stdDKH);
+void          printReminders();
 StableRead    waitForPHStability();
 float         interpolateEndpoint(float targetPH);
 bool          fitGran(float& ve, float& r2, int& n);
@@ -302,6 +336,7 @@ double        K2_Lueker(double T, double S);
 double        KB_Dickson(double T, double S);
 double        carbonateTerm(double H, double tempC, double S);
 double        borateAlk(double H, double tempC, double S);
+double        pH2O_atm(double tempC, double S);
 float         calculateAlkalinity_dKH(float pH_ref, float t_ref, float pH_tank, float t_tank);
 void          updateTrendOutput(float alk_dKH);
 float         mapFloat(float x, float inMin, float inMax, float outMin, float outMax);
@@ -389,12 +424,46 @@ void loop() {
   } else if (cal.mode == MODE_PH_DIFF) {
     runPhDiffCycle();
   } else {
-    float r = runTitrationCycle();
+    float r = runTitration(SRC_TANK, nullptr);
     if (isfinite(r)) updateTrendOutput(r);
   }
 
   g_busy = false;
+
+  // Age the maintenance counters (about TEST_INTERVAL_MS per cycle)
+  if (!g_estop) {
+    if (cal.cyclesSinceRef     != NEVER) cal.cyclesSinceRef++;
+    if (cal.cyclesSinceAcid    != NEVER) cal.cyclesSinceAcid++;
+    if (cal.cyclesSincePhCheck != NEVER) cal.cyclesSincePhCheck++;
+    saveCalibration();
+  }
+  printReminders();
   sleepUntilNextCycle();
+}
+
+static float cyclesToDays(uint32_t c) { return c * (TEST_INTERVAL_MS / 86400000.0f); }
+
+void printReminders() {
+  if (cal.mode == MODE_PH_DIFF) {
+    if (cal.cyclesSinceRef == NEVER || cyclesToDays(cal.cyclesSinceRef) >= REF_REANCHOR_DAYS) {
+      Serial.print("REMINDER: reference anchor ");
+      if (cal.cyclesSinceRef == NEVER) Serial.print("has no recorded date");
+      else { Serial.print("is about "); Serial.print(cyclesToDays(cal.cyclesSinceRef), 0); Serial.print(" days old"); }
+      Serial.println(". Reference water drifts (bacteria use up alkalinity; evaporation raises it).");
+      Serial.println("          Fix: send REFTITR (or CAL <dKH> from a fresh manual test). See README > Accuracy reminders.");
+    }
+  }
+  bool acidUsed = (cal.mode == MODE_TITRATION);   // REFTITR prints its own acid note
+  if (acidUsed && (cal.cyclesSinceAcid == NEVER || cyclesToDays(cal.cyclesSinceAcid) >= ACID_RECHECK_DAYS)) {
+    Serial.print("REMINDER: acid strength ");
+    if (cal.cyclesSinceAcid == NEVER) Serial.print("has never been verified");
+    else { Serial.print("was last verified about "); Serial.print(cyclesToDays(cal.cyclesSinceAcid), 0); Serial.print(" days ago"); }
+    Serial.println(". Titration results scale one-for-one with it.");
+    Serial.println("          Fix: send ACIDSTD <dKH> with a known standard on Pump B's inlet.");
+  }
+  if (cal.cyclesSincePhCheck == NEVER || cyclesToDays(cal.cyclesSincePhCheck) >= PHCHECK_DAYS) {
+    Serial.println("REMINDER: pH probe check is due. Fix: PHCHECK 4.00 (recalibrate with PHCAL if it fails).");
+  }
 }
 
 // ============================================================
@@ -604,6 +673,17 @@ bool rinseWithReference() {
   return true;
 }
 
+// Rinse with water from pump p, sent to waste (used for a standard).
+bool rinseToWaste(PumpId p) {
+  for (int i = 0; i < RINSE_PASSES; i++) {
+    Serial.print("[RINSE] Pass "); Serial.print(i + 1); Serial.println(" (to waste)");
+    if (!pumpML(p, RINSE_FILL_ML, true, MOVE_FILL)) { drainChamber(DRAIN_MIN_ML); return false; }
+    drainChamber(RINSE_FILL_ML * 2.0f);
+    if (g_estop) return false;
+  }
+  return true;
+}
+
 SampleReading measureReference(const char* label) {
   SampleReading bad = {0, 0, 0, 0, false, false};
   Serial.print("["); Serial.print(label); Serial.println("] Filling from reference reservoir...");
@@ -665,7 +745,9 @@ float maxAcidML() {
   return veMax + ACID_EXCESS_ML;
 }
 
-float runTitrationCycle() {
+float runTitration(TitrSource src, float* veOut) {
+  if (veOut) *veOut = NAN;
+  const PumpId fillPump = (src == SRC_REF) ? PUMP_A : PUMP_B;
   int calPts = ezoCalPoints();
   if (calPts < 2) {
     failCycle("[TITR] pH probe needs a 2- or 3-point calibration (PHCAL). Titration blocked.");
@@ -676,16 +758,21 @@ float runTitrationCycle() {
     return NAN;
   }
 
-  // 1. Rinse with tank water (returned to sump), then take the sample.
-  if (!rinseWithTank()) { failCycle("[TITR] Rinse failed."); drainChamber(DRAIN_MIN_ML); return NAN; }
+  // 1. Rinse with the sample's own water, then take the sample.
+  //    Tank water returns to the sump; reference and standard go to waste.
+  bool rinsed = (src == SRC_TANK) ? rinseWithTank()
+              : (src == SRC_REF)  ? rinseWithReference()
+              :                     rinseToWaste(PUMP_B);
+  if (!rinsed) { failCycle("[TITR] Rinse failed."); drainChamber(DRAIN_MIN_ML); return NAN; }
 
   Serial.print("[TITR] Filling "); Serial.print(cal.sampleML, 2);
   Serial.println(" mL sample...");
-  if (!pumpML(PUMP_B, cal.sampleML, true, MOVE_FILL)) {
+  if (!pumpML(fillPump, cal.sampleML, true, MOVE_FILL)) {
     failCycle("[TITR] Sample fill failed."); drainChamber(DRAIN_MIN_ML); return NAN;
   }
 #if SIMULATION_MODE
-  g_simContent = SIM_TITR; g_simAcidML = 0.0f;
+  g_simContent = SIM_TITR; g_simAcidML = 0.0f; g_simDicFactor = 1.0f;
+  g_simTitrAlk_dKH = (src == SRC_REF) ? g_simRefAlk_dKH : (src == SRC_STD) ? g_simStdAlk_dKH : g_simTankAlk_dKH;
 #endif
 
   // 2. Mix, temperature-compensate, read starting pH
@@ -711,6 +798,7 @@ float runTitrationCycle() {
   float pH     = start.pH;
   float maxAcid = maxAcidML();
   int   unstable = 0;
+  bool  stripped = false;
   titrCount = 0;
   titrData[titrCount++] = { 0.0f, start.pH, start.stable };
 
@@ -745,6 +833,24 @@ float runTitrationCycle() {
     if (pH < ABORT_PH) {
       failCycle("[TITR] pH below abort limit."); drainChamber(DRAIN_MIN_ML); return NAN;
     }
+
+    // Open-cell step (Dickson SOP 3b): once past the endpoint, strip the
+    // CO2 released by the acid, so residual bicarbonate in the Gran
+    // region (pH 3.0-3.5) is close to zero. Then re-read this point.
+    if (!stripped && pH < STRIP_BELOW_PH) {
+      stripped = true;
+      Serial.println("[TITR] Stripping CO2 (3 min)...");
+      runAeration(STRIP_MS);
+#if SIMULATION_MODE
+      g_simDicFactor = 0.02f;
+#endif
+      if (g_abortCycle || g_estop) { failCycle("[TITR] Aborted."); drainChamber(DRAIN_MIN_ML); return NAN; }
+      StableRead s2 = waitForPHStability();
+      if (!isfinite(s2.pH)) { failCycle("[TITR] pH probe lost after CO2 strip."); drainChamber(DRAIN_MIN_ML); return NAN; }
+      pH = s2.pH;
+      titrData[titrCount - 1] = { acidML, pH, s2.stable };
+      Serial.print("[TITR] after strip pH="); Serial.println(pH, 4);
+    }
     if (pH <= GRAN_STOP_PH) break;
     if (acidML >= maxAcid) {
       failCycle("[TITR] Max acid volume reached. Check probe calibration, HCl normality, sample volume.");
@@ -766,13 +872,17 @@ float runTitrationCycle() {
   else { failCycle("[TITR] No valid endpoint."); drainChamber(DRAIN_MIN_ML); return NAN; }
 
   float ta_dKH = (cal.acidNormality * veUsed / cal.sampleML) * 2800.0f;
+  if (veOut) *veOut = veUsed;
 
   Serial.println("----------------------------------------");
-  if (!isfinite(ta_dKH) || ta_dKH < MIN_VALID_DKH || ta_dKH > MAX_VALID_DKH) {
+  // A standard is checked against its stated value by ACIDSTD instead:
+  // with a wrong acid strength the result may legitimately be off-range.
+  if (src != SRC_STD && (!isfinite(ta_dKH) || ta_dKH < MIN_VALID_DKH || ta_dKH > MAX_VALID_DKH)) {
     failCycle("[TITR] Result out of range. Verify acid normality and pump calibration.");
     drainChamber(DRAIN_MIN_ML); return NAN;
   }
-  Serial.print("RESULT: "); Serial.print(ta_dKH, 2); Serial.print(" dKH  [titration, ");
+  Serial.print(src == SRC_TANK ? "RESULT: " : src == SRC_REF ? "REFERENCE: " : "STANDARD (current acid N): ");
+  Serial.print(ta_dKH, 2); Serial.print(" dKH  [titration, ");
   Serial.print(method); Serial.println("]");
   Serial.print("Ve Gran:   ");
   if (granOk) { Serial.print(veGran, 4); Serial.print(" mL  (n="); Serial.print(nGran);
@@ -1021,6 +1131,14 @@ double carbonateTerm(double H, double tempC, double S) {
   return exp(lnK0(T, S)) * (K1 / H + 2.0 * K1 * K2 / (H * H));
 }
 
+// Water vapour pressure over seawater, atm (Weiss & Price 1980).
+// Air equilibrated at a higher temperature carries more water vapour,
+// so its CO2 partial pressure is slightly lower.
+double pH2O_atm(double tempC, double S) {
+  double T = tempC + 273.15;
+  return exp(24.4543 - 67.4509 * (100.0 / T) - 4.8489 * log(T / 100.0) - 0.000544 * S);
+}
+
 double borateAlk(double H, double tempC, double S) {   // eq/kg
   double T  = tempC + 273.15;
   double KB = KB_Dickson(T, S);
@@ -1039,7 +1157,8 @@ float calculateAlkalinity_dKH(float pH_ref, float t_ref, float pH_tank, float t_
   if (!isfinite(ctRef) || !isfinite(ctTank) || ctRef <= 0 || carbRef <= 0) {
     Serial.println("MATH ERROR: Degenerate carbonate terms."); return NAN;
   }
-  double TA_tank = carbRef * (ctTank / ctRef) + borateAlk(H_tank, t_tank, S);
+  double vapour  = (1.0 - pH2O_atm(t_tank, S)) / (1.0 - pH2O_atm(t_ref, S));   // pCO2 ratio
+  double TA_tank = carbRef * (ctTank / ctRef) * vapour + borateAlk(H_tank, t_tank, S);
   return (float)(TA_tank * 2800.0);
 }
 
@@ -1122,6 +1241,9 @@ void initDefaultCalibration() {
   cal.doseMl           = 0.020f;    // CAL DOSE <mL>
   cal.salinity         = 35.0f;     // CAL SAL <psu>
   cal.chamberMaxML     = CHAMBER_DEFAULT_ML; // CAL CHAMBER <mL>
+  cal.cyclesSinceRef     = NEVER;
+  cal.cyclesSinceAcid    = NEVER;
+  cal.cyclesSincePhCheck = NEVER;
   saveCalibration();
 }
 
@@ -1189,9 +1311,54 @@ void phCheck(float bufferPH) {
   if (n < 10) { Serial.println("  FAIL: not enough readings. Check probe and wiring."); g_busy = false; return; }
   float mean = sum / n, err = mean - bufferPH;
   Serial.print("  Read "); Serial.print(mean, 3); Serial.print("  error "); Serial.print(err, 3);
-  if (fabsf(err) <= PHCHECK_TOLERANCE) Serial.println("  PASS");
+  if (fabsf(err) <= PHCHECK_TOLERANCE) { Serial.println("  PASS"); cal.cyclesSincePhCheck = 0; saveCalibration(); }
   else Serial.println("  FAIL — recalibrate with PHCAL.");
   g_busy = false;
+}
+
+// Titrate the reference reservoir and set the pH-diff anchor from it.
+void refTitrate() {
+  g_busy = true; g_abortCycle = false;
+  Serial.println("REFTITR: titrating the reference water (about 35 mL of reference used).");
+  if (cal.cyclesSinceAcid == NEVER || cyclesToDays(cal.cyclesSinceAcid) >= ACID_RECHECK_DAYS)
+    Serial.println("  Note: acid strength is not recently verified; the anchor is only as good as the acid. ACIDSTD first is best.");
+  drainChamber(DRAIN_MIN_ML);
+  float ve;
+  float ta = runTitration(SRC_REF, &ve);
+  if (isfinite(ta)) {
+    float old = cal.referenceAlk_dKH;
+    cal.referenceAlk_dKH = ta; cal.cyclesSinceRef = 0; saveCalibration();
+    Serial.print("Reference anchor set: "); Serial.print(ta, 2); Serial.print(" dKH");
+    if (old >= MIN_VALID_DKH) { Serial.print("  (was "); Serial.print(old, 2); Serial.print(")"); }
+    Serial.println();
+  } else Serial.println("REFTITR failed — anchor unchanged.");
+  g_busy = false; g_abortCycle = false;
+}
+
+// Titrate a known standard (Pump B inlet in the standard) and compute acid strength.
+void acidStandardize(float stdDKH) {
+  g_busy = true; g_abortCycle = false;
+  Serial.print("ACIDSTD: titrating a "); Serial.print(stdDKH, 2);
+  Serial.println(" dKH standard through Pump B (about 60 mL of standard used, sent to waste).");
+  drainChamber(DRAIN_MIN_ML);
+  float ve;
+  runTitration(SRC_STD, &ve);
+  if (isfinite(ve) && ve > 0) {
+    float newN = stdDKH * cal.sampleML / (2800.0f * ve);
+    float change = (newN - cal.acidNormality) / cal.acidNormality;
+    Serial.print("Measured acid strength: "); Serial.print(newN, 4);
+    Serial.print(" N  (was "); Serial.print(cal.acidNormality, 4); Serial.print(" N, ");
+    Serial.print(change * 100.0f, 1); Serial.println("%)");
+    if (fabsf(change) > ACIDSTD_MAX_CHANGE) {
+      Serial.println("  Change is over 10% — NOT saved. Check the standard, pump calibration and acid label.");
+      Serial.print("  If it is right, send: CAL ACID "); Serial.println(newN, 4);
+    } else {
+      cal.acidNormality = newN; cal.cyclesSinceAcid = 0; saveCalibration();
+      Serial.println("  Saved.");
+    }
+  } else Serial.println("ACIDSTD failed — acid strength unchanged.");
+  Serial.println("Move Pump B's inlet back to the sump. The next cycle's rinse clears the standard from the line.");
+  g_busy = false; g_abortCycle = false;
 }
 
 // ============================================================
@@ -1264,9 +1431,20 @@ void handleSerialCommands() {
     if (change > 3.0f) { Serial.print("  Changed "); Serial.print(change, 1);
                          Serial.println("% — inspect tubing for wear."); }
   }
+  else if (line == "REFTITR") {
+    if (g_estop) Serial.println("E-stop latched. Send RESUME first.");
+    else refTitrate();
+  }
+  else if (line.startsWith("ACIDSTD")) {
+    String arg = line.substring(7); arg.trim();
+    float v = arg.toFloat();
+    if (g_estop) Serial.println("E-stop latched. Send RESUME first.");
+    else if (v >= MIN_VALID_DKH && v <= MAX_VALID_DKH) acidStandardize(v);
+    else Serial.println("Example: ACIDSTD 8.00   (the standard's alkalinity in dKH; Pump B inlet in the standard first)");
+  }
   else if (line.startsWith("CAL ACID ")) {
     float v = line.substring(9).toFloat();
-    if (v > 0 && v < 2.0f) { cal.acidNormality = v; saveCalibration();
+    if (v > 0 && v < 2.0f) { cal.acidNormality = v; cal.cyclesSinceAcid = 0; saveCalibration();
       Serial.print("Acid normality: "); Serial.print(v, 4); Serial.println(" N saved"); }
     else Serial.println("Example: CAL ACID 0.1000");
   }
@@ -1305,7 +1483,7 @@ void handleSerialCommands() {
   else if (line.startsWith("CAL ")) {
     float v = line.substring(4).toFloat();
     if (v >= MIN_VALID_DKH && v <= MAX_VALID_DKH) {
-      cal.referenceAlk_dKH = v; saveCalibration();
+      cal.referenceAlk_dKH = v; cal.cyclesSinceRef = 0; saveCalibration();
       Serial.print("pH-diff anchor saved: "); Serial.print(v, 2); Serial.println(" dKH");
     } else Serial.println("Invalid. Range 3-20 dKH. Example: CAL 8.50");
   }
@@ -1329,6 +1507,7 @@ void handleSerialCommands() {
     else { Serial.println("Examples: PHCAL MID 7.00 | PHCAL LOW 4.00 | PHCAL HIGH 10.00 | PHCAL CLEAR"); return; }
     Serial.println("Probe must sit in the buffer and read steady for 1-2 min before this command.");
     String r = ezoQuery(cmd.c_str(), 1600);
+    if (arg != "CLEAR") { cal.cyclesSincePhCheck = 0; saveCalibration(); }
     Serial.print("EZO: "); Serial.println(r.length() ? r : String("(no reply)"));
     if (arg.startsWith("MID")) Serial.println("Note: MID clears LOW/HIGH. Do MID first, then LOW (and HIGH).");
     Serial.print("Calibration points now: "); Serial.println(ezoCalPoints());
@@ -1371,6 +1550,15 @@ void printStatus() {
     Serial.println(cal.stepsPerML[i], 1);
   }
   if (!g_busy) { Serial.print("pH cal points: "); Serial.println(ezoCalPoints()); }
+  auto age = [](const char* label, uint32_t c) {
+    Serial.print(label);
+    if (c == NEVER) Serial.println("never");
+    else { Serial.print(cyclesToDays(c), 1); Serial.println(" days ago"); }
+  };
+  age("Reference anchored: ", cal.cyclesSinceRef);
+  age("Acid verified: ",      cal.cyclesSinceAcid);
+  age("pH probe checked: ",   cal.cyclesSincePhCheck);
+  printReminders();
 }
 
 void printHelp() {
@@ -1393,6 +1581,8 @@ void printHelp() {
   Serial.println("PHCAL MID|LOW|HIGH <buffer>, PHCAL CLEAR");
   Serial.println("PHCHECK [buffer]     verify probe (default pH 4.00)");
   Serial.println("PHSLOPE              probe slope health");
+  Serial.println("REFTITR              titrate the reference and set the anchor");
+  Serial.println("ACIDSTD <dKH>        titrate a known standard (Pump B inlet) and set acid strength");
 }
 
 // ============================================================
@@ -1444,11 +1634,11 @@ void ezo_setTempComp(float tempC) {
 // Simple bicarbonate model so titration can be bench-tested.
 static float simTitrationPH() {
   double V0 = cal.sampleML / 1000.0, Va = g_simAcidML / 1000.0;
-  double A0 = g_simTankAlk_dKH / 2800.0;                 // eq/L
+  double A0 = g_simTitrAlk_dKH / 2800.0;                 // eq/L
   double C  = A0 * 1.02;                                  // DIC, mol/L
   double Vt = V0 + Va;
-  double alk = (A0 * V0 - cal.acidNormality * Va) / Vt;   // remaining alkalinity
-  double Ct  = C * V0 / Vt;
+  double alk = (A0 * V0 - g_simTrueAcidN * Va) / Vt;      // remaining alkalinity
+  double Ct  = C * V0 / Vt * g_simDicFactor;
   double K1 = 1.0e-6;
   double lo = 1e-10, hi = 1.0;                            // bisection on H
   for (int i = 0; i < 80; i++) {
