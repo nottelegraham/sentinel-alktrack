@@ -1,6 +1,6 @@
 /*
  * ============================================================
- *  DIY Ratiometric Alkalinity Trend Monitor  —  v3.0
+ *  Sentinel AlkTrack — DIY Ratiometric Alkalinity Monitor — v3.0
  *  TelegrahamTested
  * ============================================================
  *
@@ -64,12 +64,13 @@
  *
  * ============================================================
  */
-// SPDX-License-Identifier: CC-BY-NC-SA-4.0
-// TelegrahamTested, 2025.
-// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2025-2026 TelegrahamTested. Sentinel AlkTrack.
+// Free for personal, hobby and other noncommercial use. Selling requires
+// written permission from TelegrahamTested. See LICENSE.
 
 // ============================================================
-//  DIY Ratiometric Alkalinity Trend Monitor  —  v3.0
+//  Sentinel AlkTrack — DIY Ratiometric Alkalinity Monitor — v3.0
 //  TelegrahamTested
 // ============================================================
 

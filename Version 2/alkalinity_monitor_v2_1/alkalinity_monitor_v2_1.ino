@@ -77,9 +77,10 @@
  *
  * ============================================================
  */
-// SPDX-License-Identifier: CC0-1.0
-// No rights reserved. Telegraham Tested, 2025.
-// https://creativecommons.org/publicdomain/zero/1.0/
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// Copyright (c) 2025-2026 TelegrahamTested. Sentinel AlkTrack.
+// Free for personal, hobby and other noncommercial use. Selling requires
+// written permission from TelegrahamTested. See LICENSE.
 //
 
 

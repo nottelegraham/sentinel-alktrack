@@ -1,10 +1,10 @@
-# AlkTrack — DIY Ratiometric Alkalinity Monitor
+# Sentinel AlkTrack — DIY Ratiometric Alkalinity Monitor
 
-To do - GUI mode selection, pH probe calibration at 4.01, 7.01, and 10.01.
+![Sentinel AlkTrack](thumbnail.png)
 
 **TelegrahamTested** — Firmware v3.0
 
-AlkTrack is an open, non-commercial DIY alkalinity monitor for reef aquariums. Version 3.0 supports two user-selectable operating modes:
+Sentinel AlkTrack is an open, non-commercial DIY alkalinity monitor for reef aquariums. Version 3.0 supports two user-selectable operating modes:
 
 1. **pH differential mode** — reagent-free trend monitoring using a known reference sample and a tank sample measured in the same reaction chamber.
 2. **Acid titration mode** — true acid-demand alkalinity testing using a fixed tank-water sample volume and a known-strength acid reagent.
@@ -126,6 +126,8 @@ First run:
 
 ### pH differential/ratiometric mode
 
+![pH differential formula](Formula.png)
+
 ```text
 TA_tank = (TA_ref - BA_ref) × carbonate_speciation_ratio + BA_tank
 ```
@@ -154,10 +156,19 @@ Where `N_acid` is acid normality, `V_acid_mL` is the endpoint acid volume, and `
 
 | File | Description |
 |---|---|
-| `DIY_Alkalinity_Monitor_Build_Guide_v3_0.docx` | Hardware, wiring, assembly, and calibration guide |
-| `DIY_Alkalinity_Monitor_User_Guide_v3_0.docx` | Operating instructions for both modes |
+| `DIY_Alkalinity_Monitor_Build_Guide.docx` | Hardware, wiring, assembly, and calibration guide |
+| `DIY_Alkalinity_Monitor_User_Guide.docx` | Operating instructions for both modes |
 | `DIY_Alkalinity_Monitor_Price_Sheet_v3_0.xlsx` | Updated component price sheet |
-| `DIY_Alkalinity_Monitor_Changelog_v3_0.docx` | Version history through v3.0 |
+| `DIY_Alkalinity_Monitor_Changelog.docx` | Version history through v3.0 |
+
+Firmware and documents for v2.1 and v2.2 (pH differential only) are archived in [`Version 2/`](Version%202/).
+
+---
+
+## Roadmap
+
+- Mode selection from a GUI instead of Serial Monitor
+- Three-point pH probe calibration at 4.01, 7.01, and 10.01
 
 ---
 

@@ -1,4 +1,6 @@
-# DIY Ratiometric Alkalinity Monitor
+# Sentinel AlkTrack v2 (archived) — DIY Ratiometric Alkalinity Monitor
+
+> Archived. The current version is v3.0 in the [repository root](../README.md).
 **TelegrahamTested** — Firmware v2.2
 
 A reagent-free automated alkalinity trend monitor for reef aquariums. Uses carbonate chemistry to track whether your dKH is rising, falling, or stable — automatically, every 4 hours, without titration or chemicals.
@@ -24,7 +26,7 @@ See the full **Build Guide** and **Price Sheet** for the complete component list
 
 ## Firmware
 
-Open `alkalinity_monitor_v2_1_1/alkalinity_monitor_v2_1_1.ino` in Arduino IDE.
+Open `alkalinity_monitor_v2_2/alkalinity_monitor_v2_2.ino` in Arduino IDE (v2.1 is in `alkalinity_monitor_v2_1/`).
 
 **Libraries required** (install via Library Manager when `SIMULATION_MODE false`):
 - OneWire by Paul Stoffregen
@@ -51,10 +53,10 @@ Open `alkalinity_monitor_v2_1_1/alkalinity_monitor_v2_1_1.ino` in Arduino IDE.
 
 | File | Description |
 |---|---|
-| `Build_Guide.docx` | Full build instructions and shopping list |
-| `User_Guide.docx` | Step-by-step operating instructions |
-| `Price_Sheet.xlsx` | Itemised component cost spreadsheet |
-| `Changelog.docx` | Full version history v1 → v2.2 |
+| `DIY_Alkalinity_Monitor_Build_Guide.docx` | Full build instructions and shopping list |
+| `DIY_Alkalinity_Monitor_User_Guide.docx` | Step-by-step operating instructions |
+| `DIY_Alkalinity_Monitor_Price_Sheet.xlsx` | Itemised component cost spreadsheet |
+| `DIY_Alkalinity_Monitor_Changelog.docx` | Full version history v1 → v2.2 |
 
 ## How it works
 
